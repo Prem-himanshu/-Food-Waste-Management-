@@ -155,26 +155,45 @@ if action == "Dashboard / Filters":
     meal_sel = st.sidebar.multiselect("Meal Type", options=meal_types)
     min_qty = st.sidebar.number_input("Minimum Quantity", value=0, step=1, min_value=0)
 
-    # ---------------- Apply filters locally ----------------
-    df_filtered = df_listings.copy()
-    if city:
-        df_filtered = df_filtered[df_filtered['Location'].astype(str).isin(city)]
-    if provider_sel:
-        if 'Provider_ID' in df_listings.columns and 'Provider_ID' in df_providers.columns:
-            pids = df_providers[df_providers['Name'].astype(str).isin(provider_sel)]['Provider_ID'].tolist()
-            df_filtered = df_filtered[df_filtered['Provider_ID'].isin(pids)]
-        else:
-            if 'Provider_Name' in df_filtered.columns:
-                df_filtered = df_filtered[df_filtered['Provider_Name'].astype(str).isin(provider_sel)]
-    if food_type_sel:
-        df_filtered = df_filtered[df_filtered['Food_Type'].astype(str).isin(food_type_sel)]
-    if meal_sel:
-        df_filtered = df_filtered[df_filtered['Meal_Type'].astype(str).isin(meal_sel)]
-    if 'Quantity' in df_filtered.columns:
-        try:
-            df_filtered = df_filtered[df_filtered['Quantity'].fillna(0).astype(float) >= float(min_qty)]
-        except Exception:
-            pass
+    # safe city chart build (robust to column-name variations)
+if 'Location' in df_listings.columns:
+    # count values (Series) and reset index to DataFrame
+    s = df_listings['Location'].astype(str).value_counts()
+    city_counts = s.reset_index()  # columns may be ['index','Location'] or ['index', <name>]
+
+    # make sure column names are exactly 'City' and 'Listings'
+    if city_counts.shape[1] >= 2:
+        city_counts.columns = ['City', 'Listings']
+    else:
+        # unexpected shape: create sensible defaults
+        city_counts.columns = ['City']
+        city_counts['Listings'] = 1
+
+    # safety conversions
+    city_counts['City'] = city_counts['City'].astype(str)
+    city_counts['Listings'] = pd.to_numeric(city_counts['Listings'], errors='coerce').fillna(0).astype(int)
+
+    # limit to top N to avoid huge charts
+    TOP_N = 40
+    city_counts = city_counts.nlargest(TOP_N, 'Listings')
+
+    # attempt drawing chart, fallback to table on error
+    try:
+        chart = (
+            alt.Chart(city_counts)
+            .mark_bar()
+            .encode(
+                x=alt.X('City:N', sort='-y', title='City'),
+                y=alt.Y('Listings:Q', title='Listings'),
+                tooltip=[alt.Tooltip('City:N'), alt.Tooltip('Listings:Q')]
+            )
+            .properties(height=300)
+        )
+        st.altair_chart(chart, use_container_width=True)
+    except Exception as e:
+        st.warning("Could not render chart (Altair). Showing table instead.")
+        st.dataframe(city_counts)
+
 
     # ---------------- Right-side quick stats + safe Altair chart ----------------
     left, right = st.columns([2,1])
