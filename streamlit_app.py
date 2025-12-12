@@ -201,38 +201,38 @@ if 'Location' in df_listings.columns:
         st.write(f"### {len(df_filtered)} matching listings")
         st.dataframe(df_filtered)
 
-    with right:
+   with right:
     st.write("### Quick stats")
+
+    # Summary metrics
     total_qty = df_listings['Quantity'].dropna().astype(float).sum() if 'Quantity' in df_listings.columns else 0
     st.metric("Total Quantity (all listings)", int(total_qty))
     st.metric("Total Providers", len(df_providers))
     st.metric("Total Receivers", len(df_receivers))
 
-    # ---------------- Safe city chart (robust) ----------------
+    # ---------------- Safe city chart ----------------
     if 'Location' in df_listings.columns:
         try:
-            # build a value_counts Series and convert to DataFrame
+            # Count listings by city
             s = df_listings['Location'].astype(str).value_counts()
-            city_counts = s.reset_index()  # columns might be ['index','Location'] or ['index', <name>]
+            city_counts = s.reset_index()
 
-            # make sure we have exactly two columns named City and Listings
+            # Ensure proper column names
             if city_counts.shape[1] >= 2:
                 city_counts.columns = ['City', 'Listings']
             else:
-                # fallback if shape unexpected
                 city_counts.columns = ['City']
                 city_counts['Listings'] = 1
 
-            # safe conversions
+            # Safe conversions
             city_counts['City'] = city_counts['City'].astype(str)
             city_counts['Listings'] = pd.to_numeric(city_counts['Listings'], errors='coerce').fillna(0).astype(int)
 
-            # limit to top N to avoid huge charts
+            # Limit to top N entries
             TOP_N = 40
-            if not city_counts.empty:
-                city_counts = city_counts.nlargest(TOP_N, 'Listings')
+            city_counts = city_counts.nlargest(TOP_N, 'Listings')
 
-            # try to draw chart, fallback to table
+            # Render chart
             if not city_counts.empty:
                 chart = (
                     alt.Chart(city_counts)
@@ -240,20 +240,16 @@ if 'Location' in df_listings.columns:
                     .encode(
                         x=alt.X('City:N', sort='-y', title='City'),
                         y=alt.Y('Listings:Q', title='Listings'),
-                        tooltip=[alt.Tooltip('City:N'), alt.Tooltip('Listings:Q')]
+                        tooltip=['City', 'Listings']
                     )
                     .properties(height=300)
                 )
                 st.altair_chart(chart, use_container_width=True)
             else:
-                st.info("No city data available to display a chart.")
+                st.info("No city data available.")
         except Exception as e:
-            # show friendly error and the raw table for debugging
-            st.warning("Could not render city chart (Altair). Showing table instead.")
-            try:
-                st.dataframe(city_counts.head(200))
-            except Exception:
-                st.write("City counts not available.")
+            st.warning("Could not render city chart. Showing table instead.")
+            st.dataframe(city_counts)
 
 # ---------------- Show Tables ----------------
 elif action == "Show Tables":
