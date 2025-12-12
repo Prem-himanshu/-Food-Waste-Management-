@@ -1,400 +1,254 @@
-
-# streamlit_app.py
-# Food Waste Management — full Streamlit app (clean, safe, sidebar filters)
 import streamlit as st
 import pandas as pd
 import sqlite3
-import glob
 import os
-from datetime import datetime
+import glob
 import altair as alt
+from datetime import datetime
 
 st.set_page_config(page_title="Food Waste Management", layout="wide")
 
 DB_PATH = "food_waste.db"
 
-# ------------------ Utilities ------------------
+# ---------------------------------------------------------
+# DATABASE UTILITIES
+# ---------------------------------------------------------
 def list_csvs():
     return sorted(glob.glob("*.csv"))
 
-def create_db_from_csvs(db_path=DB_PATH):
-    """Create or update DB from CSVs found in repo root."""
-    csvs = list_csvs()
-    if not csvs:
-        return False, "No CSV files found in repo root."
-    con = sqlite3.connect(db_path)
-    loaded = []
-    for f in csvs:
-        name = f.lower()
-        if "food_list" in name:
-            tbl = "food_listings"
-        elif "provider" in name:
-            tbl = "providers"
+def create_db_from_csvs():
+    csv_files = list_csvs()
+    if not csv_files:
+        return False, "No CSV files found."
+
+    con = sqlite3.connect(DB_PATH)
+    for file in csv_files:
+        name = file.lower()
+        if "provider" in name:
+            table = "providers"
         elif "receiver" in name:
-            tbl = "receivers"
+            table = "receivers"
+        elif "listing" in name:
+            table = "food_listings"
         elif "claim" in name:
-            tbl = "claims"
+            table = "claims"
         else:
-            tbl = os.path.splitext(f)[0]
+            table = os.path.splitext(file)[0]
+
         try:
-            df = pd.read_csv(f)
-            df.to_sql(tbl, con, if_exists="replace", index=False)
-            loaded.append((f, tbl, len(df)))
+            df = pd.read_csv(file)
+            df.to_sql(table, con, if_exists="replace", index=False)
         except Exception as e:
             con.close()
-            return False, f"Failed to load {f}: {e}"
-    con.commit()
-    con.close()
-    return True, loaded
+            return False, f"Error loading {file}: {e}"
 
-def inspect_db(db_path=DB_PATH):
-    if not os.path.exists(db_path):
-        return []
-    con = sqlite3.connect(db_path)
-    try:
-        cur = con.cursor()
-        cur.execute("SELECT name FROM sqlite_master WHERE type='table';")
-        tables = [r[0] for r in cur.fetchall()]
-    finally:
-        con.close()
-    return tables
+    con.close()
+    return True, "Database created from CSVs."
+
+def ensure_db_ready():
+    if os.path.exists(DB_PATH):
+        return True, "DB exists."
+
+    csvs = list_csvs()
+    if csvs:
+        ok, msg = create_db_from_csvs()
+        return ok, msg
+
+    return False, "Database missing & no CSVs found."
 
 def run_query(q, params=()):
     con = sqlite3.connect(DB_PATH)
-    try:
-        df = pd.read_sql_query(q, con, params=params)
-    finally:
-        con.close()
+    df = pd.read_sql_query(q, con, params=params)
+    con.close()
     return df
 
 def run_exec(q, params=()):
     con = sqlite3.connect(DB_PATH)
-    cur = con.cursor()
-    cur.execute(q, params)
+    con.execute(q, params)
     con.commit()
     con.close()
 
-# ------------------ Startup: ensure DB/tables ------------------
-def ensure_data():
-    tables = inspect_db()
-    required = {"providers","receivers","food_listings","claims"}
-    if required.issubset(set(tables)):
-        return True, "All required tables present."
-    # if CSVs exist, build db from CSVs
-    csvs = list_csvs()
-    if csvs:
-        ok, info = create_db_from_csvs()
-        if ok:
-            return True, f"DB created from CSVs: {info}"
-        else:
-            return False, f"Failed to create DB from CSVs: {info}"
-    # no CSVs and DB missing required tables
-    return False, f"Missing required tables {required - set(tables)}. Upload CSVs or a proper food_waste.db."
-
-ok, msg = ensure_data()
+# ---------------------------------------------------------
+# CHECK DATA
+# ---------------------------------------------------------
+ok, msg = ensure_db_ready()
 if not ok:
     st.title("Food Waste Management System")
-    st.error("Data not ready: " + str(msg))
-    st.info("Place CSV files (providers/receivers/food_listings/claims) or upload a food_waste.db in the repo root, then refresh the app.")
+    st.error(msg)
     st.stop()
-else:
-    # show a small success message in UI
-    st.sidebar.success("Data ready")
 
-# ------------------ Main UI ------------------
+# ---------------------------------------------------------
+# MAIN UI
+# ---------------------------------------------------------
 st.title("Food Waste Management System")
 
-st.sidebar.header("Actions")
-action = st.sidebar.selectbox("Choose action", [
+menu = st.sidebar.selectbox("Choose action", [
     "Dashboard / Filters",
     "Show Tables",
     "Add Listing",
     "Make Claim",
-    "Update Claim Status",
-    "Run SQL Queries (15+)"
+    "Update Claim Status"
 ])
 
-# ---------------- Dashboard / Filters (sidebar filters) ----------------
-if action == "Dashboard / Filters":
-    st.header("Explore food listings")
+# ---------------------------------------------------------
+# DASHBOARD / FILTERS
+# ---------------------------------------------------------
+if menu == "Dashboard / Filters":
+    st.header("Explore Food Listings")
 
-    # load data
-    try:
-        df_listings = run_query("SELECT * FROM food_listings")
-    except Exception as e:
-        st.error("Failed to read food_listings: " + str(e))
-        st.stop()
-    df_providers = run_query("SELECT * FROM providers")
-    df_receivers = run_query("SELECT * FROM receivers")
-    df_claims = run_query("SELECT * FROM claims")
+    df_list = run_query("SELECT * FROM food_listings")
+    df_prov = run_query("SELECT * FROM providers")
+    df_recv = run_query("SELECT * FROM receivers")
 
-    # normalize column names
-    df_listings.columns = [c.strip() for c in df_listings.columns]
+    left, right = st.columns([2, 1])
 
-    # ---------------- prepare options for filters (safe types) ----------------
-    cities = []
-    providers = []
-    food_types = []
-    meal_types = []
-
-    if 'Location' in df_listings.columns:
-        cities = sorted(df_listings['Location'].dropna().astype(str).unique())
-    if 'Name' in df_providers.columns:
-        providers = sorted(df_providers['Name'].dropna().astype(str).unique())
-    if 'Food_Type' in df_listings.columns:
-        food_types = sorted(df_listings['Food_Type'].dropna().astype(str).unique())
-    if 'Meal_Type' in df_listings.columns:
-        meal_types = sorted(df_listings['Meal_Type'].dropna().astype(str).unique())
-
-    # ---------------- Sidebar filters (no defaults) ----------------
+    # sidebar filters
     st.sidebar.header("Filters")
-    st.sidebar.write("Leave filters empty to show all results.")
-    city = st.sidebar.multiselect("City", options=cities)                # no default selection
-    provider_sel = st.sidebar.multiselect("Provider", options=providers) # no default selection
-    food_type_sel = st.sidebar.multiselect("Food Type", options=food_types)
-    meal_sel = st.sidebar.multiselect("Meal Type", options=meal_types)
-    min_qty = st.sidebar.number_input("Minimum Quantity", value=0, step=1, min_value=0)
+    city_filter = st.sidebar.multiselect(
+        "City", sorted(df_list["Location"].astype(str).unique())
+    )
 
-    # safe city chart build (robust to column-name variations)
-if 'Location' in df_listings.columns:
-    # count values (Series) and reset index to DataFrame
-    s = df_listings['Location'].astype(str).value_counts()
-    city_counts = s.reset_index()  # columns may be ['index','Location'] or ['index', <name>]
+    prov_filter = st.sidebar.multiselect(
+        "Provider", sorted(df_prov["Name"].astype(str).unique())
+    )
 
-    # make sure column names are exactly 'City' and 'Listings'
-    if city_counts.shape[1] >= 2:
-        city_counts.columns = ['City', 'Listings']
-    else:
-        # unexpected shape: create sensible defaults
-        city_counts.columns = ['City']
-        city_counts['Listings'] = 1
+    food_filter = st.sidebar.multiselect(
+        "Food Type", sorted(df_list["Food_Type"].astype(str).unique())
+    )
 
-    # safety conversions
-    city_counts['City'] = city_counts['City'].astype(str)
-    city_counts['Listings'] = pd.to_numeric(city_counts['Listings'], errors='coerce').fillna(0).astype(int)
+    meal_filter = st.sidebar.multiselect(
+        "Meal Type", sorted(df_list["Meal_Type"].astype(str).unique())
+    )
 
-    # limit to top N to avoid huge charts
-    TOP_N = 40
-    city_counts = city_counts.nlargest(TOP_N, 'Listings')
+    min_qty = st.sidebar.number_input("Minimum Quantity", value=0, step=1)
 
-    # attempt drawing chart, fallback to table on error
-    try:
-        chart = (
-            alt.Chart(city_counts)
-            .mark_bar()
-            .encode(
-                x=alt.X('City:N', sort='-y', title='City'),
-                y=alt.Y('Listings:Q', title='Listings'),
-                tooltip=[alt.Tooltip('City:N'), alt.Tooltip('Listings:Q')]
-            )
-            .properties(height=300)
-        )
-        st.altair_chart(chart, use_container_width=True)
-    except Exception as e:
-        st.warning("Could not render chart (Altair). Showing table instead.")
-        st.dataframe(city_counts)
+    # apply filters
+    df_filtered = df_list.copy()
 
+    if city_filter:
+        df_filtered = df_filtered[df_filtered["Location"].isin(city_filter)]
 
-    # ---------------- Right-side quick stats + safe Altair chart ----------------
-    left, right = st.columns([2,1])
+    if prov_filter:
+        pids = df_prov[df_prov["Name"].isin(prov_filter)]["Provider_ID"].tolist()
+        df_filtered = df_filtered[df_filtered["Provider_ID"].isin(pids)]
+
+    if food_filter:
+        df_filtered = df_filtered[df_filtered["Food_Type"].isin(food_filter)]
+
+    if meal_filter:
+        df_filtered = df_filtered[df_filtered["Meal_Type"].isin(meal_filter)]
+
+    df_filtered = df_filtered[df_filtered["Quantity"].astype(int) >= min_qty]
+
+    # LEFT PANEL — data table
     with left:
-        st.write(f"### {len(df_filtered)} matching listings")
-        st.dataframe(df_filtered)
+        st.subheader(f"Listings ({len(df_filtered)})")
+        st.dataframe(df_filtered, use_container_width=True)
 
-   with right:
-    st.write("### Quick stats")
+    # RIGHT PANEL — metrics + chart
+    with right:
+        st.subheader("Quick Stats")
+        st.metric("Total Listings", len(df_list))
+        st.metric("Total Providers", len(df_prov))
+        st.metric("Total Receivers", len(df_recv))
 
-    # Summary metrics
-    total_qty = df_listings['Quantity'].dropna().astype(float).sum() if 'Quantity' in df_listings.columns else 0
-    st.metric("Total Quantity (all listings)", int(total_qty))
-    st.metric("Total Providers", len(df_providers))
-    st.metric("Total Receivers", len(df_receivers))
+        # --- Safe City Chart ---
+        st.subheader("Listings per City")
 
-    # ---------------- Safe city chart ----------------
-    if 'Location' in df_listings.columns:
         try:
-            # Count listings by city
-            s = df_listings['Location'].astype(str).value_counts()
-            city_counts = s.reset_index()
+            city_counts = df_list["Location"].astype(str).value_counts().reset_index()
+            city_counts.columns = ["City", "Listings"]
 
-            # Ensure proper column names
-            if city_counts.shape[1] >= 2:
-                city_counts.columns = ['City', 'Listings']
-            else:
-                city_counts.columns = ['City']
-                city_counts['Listings'] = 1
-
-            # Safe conversions
-            city_counts['City'] = city_counts['City'].astype(str)
-            city_counts['Listings'] = pd.to_numeric(city_counts['Listings'], errors='coerce').fillna(0).astype(int)
-
-            # Limit to top N entries
-            TOP_N = 40
-            city_counts = city_counts.nlargest(TOP_N, 'Listings')
-
-            # Render chart
-            if not city_counts.empty:
-                chart = (
-                    alt.Chart(city_counts)
-                    .mark_bar()
-                    .encode(
-                        x=alt.X('City:N', sort='-y', title='City'),
-                        y=alt.Y('Listings:Q', title='Listings'),
-                        tooltip=['City', 'Listings']
-                    )
-                    .properties(height=300)
+            chart = (
+                alt.Chart(city_counts)
+                .mark_bar()
+                .encode(
+                    x=alt.X("City:N", sort="-y"),
+                    y="Listings:Q",
+                    tooltip=["City", "Listings"]
                 )
-                st.altair_chart(chart, use_container_width=True)
-            else:
-                st.info("No city data available.")
-        except Exception as e:
-            st.warning("Could not render city chart. Showing table instead.")
+            )
+            st.altair_chart(chart, use_container_width=True)
+        except:
+            st.info("Chart unavailable. Showing table instead.")
             st.dataframe(city_counts)
 
-# ---------------- Show Tables ----------------
-elif action == "Show Tables":
-    st.header("Database tables")
-    # display up to 200 rows per table
-    for t in ["providers","receivers","food_listings","claims"]:
-        st.write(f"### {t}")
+# ---------------------------------------------------------
+# SHOW TABLES
+# ---------------------------------------------------------
+if menu == "Show Tables":
+    st.header("All Tables")
+
+    for table in ["providers", "receivers", "food_listings", "claims"]:
+        st.subheader(table)
         try:
-            df = run_query(f"SELECT * FROM {t} LIMIT 200")
+            df = run_query(f"SELECT * FROM {table}")
             st.dataframe(df)
-        except Exception as e:
-            st.error(f"Error reading table {t}: {e}")
+        except:
+            st.warning(f"Cannot load table: {table}")
 
-# ---------------- Add Food Listing ----------------
-elif action == "Add Listing":
-    st.header("Add a new Food Listing")
-    with st.form("add_listing"):
-        provider_id = st.text_input("Provider ID (existing provider) - integer")
-        food_name = st.text_input("Food name")
-        qty = st.number_input("Quantity", value=1, min_value=0, step=1)
-        expiry = st.date_input("Expiry date (optional)")
-        location = st.text_input("Location / City")
-        food_type = st.selectbox("Food Type", options=["Vegetarian","Non-Vegetarian","Vegan","Other"])
-        meal_type = st.selectbox("Meal Type", options=["Breakfast","Lunch","Dinner","Snacks","Other"])
-        submitted = st.form_submit_button("Add Listing")
-    if submitted:
-        try:
-            run_exec("""
-            INSERT INTO food_listings (Food_Name, Quantity, Expiry_Date, Provider_ID, Provider_Type, Location, Food_Type, Meal_Type)
-            VALUES (?,?,?,?,?,?,?,?)
-            """, (food_name, qty, expiry.strftime("%Y-%m-%d") if expiry else None, int(provider_id) if provider_id else None, None, location, food_type, meal_type))
-            st.success("Listing added successfully.")
-        except Exception as e:
-            st.error(f"Failed to add listing: {e}")
+# ---------------------------------------------------------
+# ADD LISTING
+# ---------------------------------------------------------
+if menu == "Add Listing":
+    st.header("Add New Food Listing")
 
-# ---------------- Make Claim ----------------
-elif action == "Make Claim":
-    st.header("Claim available food")
-    try:
-        df_listings = run_query("SELECT * FROM food_listings")
-    except Exception as e:
-        st.error("Failed to read listings: " + str(e))
-        st.stop()
+    with st.form("add"):
+        food = st.text_input("Food Name")
+        qty = st.number_input("Quantity", min_value=1)
+        exp = st.date_input("Expiry Date")
+        prov_id = st.number_input("Provider ID", min_value=1)
+        city = st.text_input("City")
+        food_type = st.selectbox("Food Type", ["Vegetarian", "Non-Vegetarian", "Vegan"])
+        meal = st.selectbox("Meal Type", ["Breakfast", "Lunch", "Dinner", "Snacks"])
 
-    if df_listings.empty:
+        submit = st.form_submit_button("Save")
+
+    if submit:
+        run_exec("""
+            INSERT INTO food_listings (Food_Name, Quantity, Expiry_Date, Provider_ID, Location, Food_Type, Meal_Type)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (food, qty, str(exp), prov_id, city, food_type, meal))
+
+        st.success("Listing added successfully!")
+
+# ---------------------------------------------------------
+# MAKE CLAIM
+# ---------------------------------------------------------
+if menu == "Make Claim":
+    st.header("Make a Claim")
+
+    df_list = run_query("SELECT * FROM food_listings")
+
+    if df_list.empty:
         st.info("No listings available.")
     else:
-        pick = st.selectbox("Pick Food_ID", df_listings['Food_ID'].tolist())
-        receiver_id = st.text_input("Receiver ID (existing) - integer")
-        if st.button("Submit Claim"):
-            try:
-                ts = datetime.now().isoformat()
-                run_exec("INSERT INTO claims (Food_ID, Receiver_ID, Status, Timestamp) VALUES (?, ?, ?, ?)",
-                         (int(pick), int(receiver_id), "Pending", ts))
-                st.success("Claim submitted as Pending.")
-            except Exception as e:
-                st.error(f"Error submitting claim: {e}")
+        fid = st.selectbox("Select Food ID", df_list["Food_ID"])
+        rid = st.number_input("Receiver ID", min_value=1)
 
-# ---------------- Update Claim Status ----------------
-elif action == "Update Claim Status":
-    st.header("Update a claim status (Pending -> Completed/Cancelled)")
+        if st.button("Submit"):
+            run_exec("""
+                INSERT INTO claims (Food_ID, Receiver_ID, Status, Timestamp)
+                VALUES (?, ?, ?, ?)
+            """, (fid, rid, "Pending", datetime.now().isoformat()))
+
+            st.success("Claim submitted!")
+
+# ---------------------------------------------------------
+# UPDATE CLAIM STATUS
+# ---------------------------------------------------------
+if menu == "Update Claim Status":
+    st.header("Update Claim Status")
+
     df_claims = run_query("SELECT * FROM claims")
+
     if df_claims.empty:
-        st.info("No claims in database.")
+        st.info("No claims found.")
     else:
-        claim_id = st.selectbox("Claim_ID", df_claims['Claim_ID'].tolist())
-        new_status = st.selectbox("New status", ["Completed","Cancelled","Pending"])
+        cid = st.selectbox("Select Claim ID", df_claims["Claim_ID"])
+        new_status = st.selectbox("New Status", ["Pending", "Completed", "Cancelled"])
+
         if st.button("Update"):
-            try:
-                run_exec("UPDATE claims SET Status = ? WHERE Claim_ID = ?", (new_status, claim_id))
-                st.success("Claim updated.")
-            except Exception as e:
-                st.error(f"Failed to update: {e}")
-
-# ---------------- Run SQL Queries (15+) ----------------
-elif action == "Run SQL Queries (15+)":
-    st.header("Predefined SQL queries and insights (from PRD)")
-    queries = {
-        "1. Providers & receivers per city": """
-            SELECT p.City AS City,
-                   COUNT(DISTINCT p.Provider_ID) AS Providers,
-                   (SELECT COUNT(DISTINCT r.Receiver_ID) FROM receivers r WHERE r.City = p.City) AS Receivers
-            FROM providers p GROUP BY p.City ORDER BY Providers DESC
-        """,
-        "2. Provider types contributing most food (by count listings)": """
-            SELECT Provider_Type, COUNT(*) AS Listings FROM food_listings GROUP BY Provider_Type ORDER BY Listings DESC
-        """,
-        "3. Provider contacts in city (example: choose city)": "SELECT Name, Contact FROM providers WHERE City = ?",
-        "4. Receivers with most claims": """
-            SELECT r.Name, COUNT(*) AS Claims
-            FROM claims c JOIN receivers r ON c.Receiver_ID = r.Receiver_ID
-            GROUP BY r.Name ORDER BY Claims DESC
-        """,
-        "5. Total quantity available": "SELECT SUM(CAST(Quantity AS INTEGER)) AS TotalQuantity FROM food_listings",
-        "6. City with highest listings": """
-            SELECT Location AS City, COUNT(*) AS Listings FROM food_listings GROUP BY Location ORDER BY Listings DESC LIMIT 10
-        """,
-        "7. Most common food types": "SELECT Food_Type, COUNT(*) AS Count FROM food_listings GROUP BY Food_Type ORDER BY Count DESC",
-        "8. Claims per food item": "SELECT f.Food_ID, f.Food_Name, COUNT(c.Claim_ID) AS ClaimCount FROM food_listings f LEFT JOIN claims c ON f.Food_ID = c.Food_ID GROUP BY f.Food_ID ORDER BY ClaimCount DESC",
-        "9. Provider with highest successful claims": """
-            SELECT p.Name, COUNT(*) AS SuccessfulClaims
-            FROM claims c JOIN food_listings f ON c.Food_ID = f.Food_ID JOIN providers p ON f.Provider_ID = p.Provider_ID
-            WHERE c.Status = 'Completed'
-            GROUP BY p.Name ORDER BY SuccessfulClaims DESC
-        """,
-        "10. Claims status percentage": """
-            SELECT Status, ROUND(100.0 * COUNT(*) / (SELECT COUNT(*) FROM claims), 2) AS Percentage FROM claims GROUP BY Status
-        """,
-        "11. Avg quantity claimed per receiver": """
-            SELECT r.Name, AVG(cast(f.Quantity as float)) as AvgQuantity
-            FROM claims c JOIN receivers r ON c.Receiver_ID = r.Receiver_ID JOIN food_listings f ON c.Food_ID = f.Food_ID
-            GROUP BY r.Name ORDER BY AvgQuantity DESC
-        """,
-        "12. Most claimed meal type": "SELECT Meal_Type, COUNT(*) AS Count FROM food_listings f JOIN claims c ON f.Food_ID = c.Food_ID GROUP BY Meal_Type ORDER BY Count DESC",
-        "13. Total quantity donated by each provider": "SELECT p.Name, SUM(CAST(f.Quantity AS INTEGER)) AS TotalDonated FROM food_listings f JOIN providers p ON f.Provider_ID = p.Provider_ID GROUP BY p.Name ORDER BY TotalDonated DESC",
-        "14. Listings expiring soon (next 7 days)": "SELECT * FROM food_listings WHERE date(Expiry_Date) <= date('now','+7 days')",
-        "15. Top 10 food items by quantity": "SELECT Food_Name, SUM(CAST(Quantity AS INTEGER)) AS TotalQty FROM food_listings GROUP BY Food_Name ORDER BY TotalQty DESC LIMIT 10"
-    }
-
-    query_choice = st.selectbox("Choose query", list(queries.keys()))
-    chosen_q = queries[query_choice]
-    if "choose city" in chosen_q.lower():
-        city_input = st.text_input("Enter city for provider contact list (case sensitive or exact match)")
-        if st.button("Run query"):
-            try:
-                df = run_query(queries["3. Provider contacts in city (example: choose city)"], params=(city_input,))
-                st.write(df)
-            except Exception as e:
-                st.error(e)
-    else:
-        if st.button("Run selected query"):
-            try:
-                df = run_query(chosen_q)
-                st.write(df)
-                if df.shape[0] == 0:
-                    st.info("No rows returned")
-                else:
-                    numeric_cols = df.select_dtypes(include=['int','float']).columns.tolist()
-                    if numeric_cols:
-                        col = numeric_cols[0]
-                        chart = alt.Chart(df).mark_bar().encode(x=df.columns[0]+":N", y=col+':Q', tooltip=list(df.columns)).properties(height=300)
-                        st.altair_chart(chart, use_container_width=True)
-            except Exception as e:
-                st.error(f"Query failed: {e}")
-
-st.write("---")
-st.caption("App: providers, receivers, food listings, claims; filters, CRUD, SQL analysis.")
+            run_exec("UPDATE claims SET Status = ? WHERE Claim_ID = ?", (new_status, cid))
+            st.success("Claim updated!")
 
