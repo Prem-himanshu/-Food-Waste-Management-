@@ -111,11 +111,11 @@ action = st.sidebar.selectbox("Choose action", [
     "Run SQL Queries (15+)"
 ])
 
-# Dashboard / Filters
+# ---- Dashboard / Filters (sidebar filters, no default selections) ----
 if action == "Dashboard / Filters":
     st.header("Explore food listings")
-    left, right = st.columns([2,1])
 
+    # load data
     try:
         df_listings = run_query("SELECT * FROM food_listings")
     except Exception as e:
@@ -128,38 +128,49 @@ if action == "Dashboard / Filters":
     # normalize column names
     df_listings.columns = [c.strip() for c in df_listings.columns]
 
+    # prepare options for filters
+    cities = sorted(df_listings['Location'].dropna().unique()) if 'Location' in df_listings.columns else []
+    providers = sorted(df_providers['Name'].dropna().unique()) if 'Name' in df_providers.columns else []
+    food_types = sorted(df_listings['Food_Type'].dropna().unique()) if 'Food_Type' in df_listings.columns else []
+    meal_types = sorted(df_listings['Meal_Type'].dropna().unique()) if 'Meal_Type' in df_listings.columns else []
+
+    # Sidebar filters (clean UI)
+    st.sidebar.header("Filters")
+    st.sidebar.write("Leave filters empty to show all results.")
+    city = st.sidebar.multiselect("City", options=cities)               # no default
+    provider_sel = st.sidebar.multiselect("Provider", options=providers) # no default
+    food_type_sel = st.sidebar.multiselect("Food Type", options=food_types)
+    meal_sel = st.sidebar.multiselect("Meal Type", options=meal_types)
+    min_qty = st.sidebar.number_input("Minimum Quantity", value=0, step=1, min_value=0)
+
+    # Filter data locally for robustness
+    df_filtered = df_listings.copy()
+    if city:
+        df_filtered = df_filtered[df_filtered['Location'].isin(city)]
+    if provider_sel:
+        # try map provider names -> Provider_ID if available
+        if 'Provider_ID' in df_listings.columns and 'Provider_ID' in df_providers.columns:
+            pids = df_providers[df_providers['Name'].isin(provider_sel)]['Provider_ID'].tolist()
+            df_filtered = df_filtered[df_filtered['Provider_ID'].isin(pids)]
+        else:
+            # fallback: filter by Provider_Name if present
+            if 'Provider_Name' in df_filtered.columns:
+                df_filtered = df_filtered[df_filtered['Provider_Name'].isin(provider_sel)]
+    if food_type_sel:
+        df_filtered = df_filtered[df_filtered['Food_Type'].isin(food_type_sel)]
+    if meal_sel:
+        df_filtered = df_filtered[df_filtered['Meal_Type'].isin(meal_sel)]
+    if 'Quantity' in df_filtered.columns:
+        try:
+            df_filtered = df_filtered[df_filtered['Quantity'].fillna(0).astype(float) >= float(min_qty)]
+        except Exception:
+            pass
+
+    # Layout: main table left, quick stats right
+    left, right = st.columns([2,1])
     with left:
-        cities = sorted(df_listings['Location'].dropna().unique()) if 'Location' in df_listings.columns else []
-        providers = sorted(df_providers['Name'].dropna().unique()) if 'Name' in df_providers.columns else []
-        food_types = sorted(df_listings['Food_Type'].dropna().unique()) if 'Food_Type' in df_listings.columns else []
-        meal_types = sorted(df_listings['Meal_Type'].dropna().unique()) if 'Meal_Type' in df_listings.columns else []
-
-        city = st.multiselect("Filter by City", options=cities, default=cities)
-        provider_sel = st.multiselect("Provider", options=providers, default=providers)
-        food_type_sel = st.multiselect("Food Type", options=food_types, default=food_types)
-        meal_sel = st.multiselect("Meal Type", options=meal_types, default=meal_types)
-        min_qty = st.number_input("Minimum Quantity", value=0, step=1)
-
-        # apply filters locally for robustness
-        df_filtered = df_listings.copy()
-        if city:
-            df_filtered = df_filtered[df_filtered['Location'].isin(city)]
-        if provider_sel and 'Provider_ID' in df_listings.columns and 'Provider_ID' in df_providers.columns:
-            pid = df_providers[df_providers['Name'].isin(provider_sel)]['Provider_ID'].tolist()
-            df_filtered = df_filtered[df_filtered['Provider_ID'].isin(pid)]
-        if food_type_sel:
-            df_filtered = df_filtered[df_filtered['Food_Type'].isin(food_type_sel)]
-        if meal_sel:
-            df_filtered = df_filtered[df_filtered['Meal_Type'].isin(meal_sel)]
-        if 'Quantity' in df_filtered.columns:
-            try:
-                df_filtered = df_filtered[df_filtered['Quantity'].fillna(0).astype(float) >= float(min_qty)]
-            except Exception:
-                pass
-
         st.write(f"### {len(df_filtered)} matching listings")
         st.dataframe(df_filtered)
-
     with right:
         st.write("### Quick stats")
         total_qty = df_listings['Quantity'].dropna().astype(float).sum() if 'Quantity' in df_listings.columns else 0
@@ -171,6 +182,7 @@ if action == "Dashboard / Filters":
             if not city_counts.empty:
                 chart = alt.Chart(city_counts).mark_bar().encode(x='City:N', y='Listings:Q', tooltip=['City','Listings'])
                 st.altair_chart(chart, use_container_width=True)
+# ---- end replacement ----
 
 # Show Tables
 elif action == "Show Tables":
