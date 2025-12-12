@@ -1,7 +1,6 @@
-# streamlit_app.py
-# Food Waste Management — full Streamlit app
-# Auto-loads CSVs or uses food_waste.db. Replace or extend as needed.
 
+# streamlit_app.py
+# Food Waste Management — full Streamlit app (clean, safe, sidebar filters)
 import streamlit as st
 import pandas as pd
 import sqlite3
@@ -52,10 +51,12 @@ def inspect_db(db_path=DB_PATH):
     if not os.path.exists(db_path):
         return []
     con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute("SELECT name FROM sqlite_master WHERE type='table';")
-    tables = [r[0] for r in cur.fetchall()]
-    con.close()
+    try:
+        cur = con.cursor()
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table';")
+        tables = [r[0] for r in cur.fetchall()]
+    finally:
+        con.close()
     return tables
 
 def run_query(q, params=()):
@@ -92,26 +93,28 @@ def ensure_data():
 
 ok, msg = ensure_data()
 if not ok:
+    st.title("Food Waste Management System")
     st.error("Data not ready: " + str(msg))
     st.info("Place CSV files (providers/receivers/food_listings/claims) or upload a food_waste.db in the repo root, then refresh the app.")
     st.stop()
 else:
-    st.success("Data ready: " + str(msg))
+    # show a small success message in UI
+    st.sidebar.success("Data ready")
 
-# ------------------ App UI ------------------
+# ------------------ Main UI ------------------
 st.title("Food Waste Management System")
 
 st.sidebar.header("Actions")
 action = st.sidebar.selectbox("Choose action", [
     "Dashboard / Filters",
     "Show Tables",
-    "Add Food Listing",
+    "Add Listing",
     "Make Claim",
     "Update Claim Status",
     "Run SQL Queries (15+)"
 ])
 
-# ---- Dashboard / Filters (sidebar filters, no default selections) ----
+# ---------------- Dashboard / Filters (sidebar filters) ----------------
 if action == "Dashboard / Filters":
     st.header("Explore food listings")
 
@@ -128,101 +131,95 @@ if action == "Dashboard / Filters":
     # normalize column names
     df_listings.columns = [c.strip() for c in df_listings.columns]
 
-  # ---------------- prepare options for filters (safe types) ----------------
-# ensure columns exist and convert to plain python types to avoid Altair errors
-cities = []
-providers = []
-food_types = []
-meal_types = []
+    # ---------------- prepare options for filters (safe types) ----------------
+    cities = []
+    providers = []
+    food_types = []
+    meal_types = []
 
-if 'Location' in df_listings.columns:
-    # convert to str and drop nulls
-    cities = sorted(df_listings['Location'].dropna().astype(str).unique())
-
-if 'Name' in df_providers.columns:
-    providers = sorted(df_providers['Name'].dropna().astype(str).unique())
-
-if 'Food_Type' in df_listings.columns:
-    food_types = sorted(df_listings['Food_Type'].dropna().astype(str).unique())
-
-if 'Meal_Type' in df_listings.columns:
-    meal_types = sorted(df_listings['Meal_Type'].dropna().astype(str).unique())
-
-# ---------------- Sidebar filters (no defaults) ----------------
-st.sidebar.header("Filters")
-st.sidebar.write("Leave filters empty to show all results.")
-city = st.sidebar.multiselect("City", options=cities)                # no default selection
-provider_sel = st.sidebar.multiselect("Provider", options=providers) # no default selection
-food_type_sel = st.sidebar.multiselect("Food Type", options=food_types)
-meal_sel = st.sidebar.multiselect("Meal Type", options=meal_types)
-min_qty = st.sidebar.number_input("Minimum Quantity", value=0, step=1, min_value=0)
-
-# ---------------- Apply filters locally ----------------
-df_filtered = df_listings.copy()
-if city:
-    df_filtered = df_filtered[df_filtered['Location'].astype(str).isin(city)]
-if provider_sel:
-    if 'Provider_ID' in df_listings.columns and 'Provider_ID' in df_providers.columns:
-        pids = df_providers[df_providers['Name'].astype(str).isin(provider_sel)]['Provider_ID'].tolist()
-        df_filtered = df_filtered[df_filtered['Provider_ID'].isin(pids)]
-    else:
-        if 'Provider_Name' in df_filtered.columns:
-            df_filtered = df_filtered[df_filtered['Provider_Name'].astype(str).isin(provider_sel)]
-if food_type_sel:
-    df_filtered = df_filtered[df_filtered['Food_Type'].astype(str).isin(food_type_sel)]
-if meal_sel:
-    df_filtered = df_filtered[df_filtered['Meal_Type'].astype(str).isin(meal_sel)]
-if 'Quantity' in df_filtered.columns:
-    try:
-        df_filtered = df_filtered[df_filtered['Quantity'].fillna(0).astype(float) >= float(min_qty)]
-    except Exception:
-        pass
-
-# ---------------- Right-side quick stats + safe Altair chart ----------------
-left, right = st.columns([2,1])
-with left:
-    st.write(f"### {len(df_filtered)} matching listings")
-    st.dataframe(df_filtered)
-
-with right:
-    st.write("### Quick stats")
-    total_qty = df_listings['Quantity'].dropna().astype(float).sum() if 'Quantity' in df_listings.columns else 0
-    st.metric("Total Quantity (all listings)", int(total_qty))
-    st.metric("Total Providers", len(df_providers))
-    st.metric("Total Receivers", len(df_receivers))
-
-    # build a safe city chart (convert types, limit top N)
     if 'Location' in df_listings.columns:
-        city_counts = (
-            df_listings['Location']
-            .astype(str)
-            .value_counts()
-            .reset_index()
-            .rename(columns={'index': 'City', 'Location': 'Listings'})
-        )
-        if not city_counts.empty:
-            city_counts['City'] = city_counts['City'].astype(str)
-            city_counts['Listings'] = city_counts['Listings'].fillna(0).astype(int)
-            # limit to top N to avoid extremely large charts
-            TOP_N = 40
-            city_counts = city_counts.nlargest(TOP_N, 'Listings')
+        cities = sorted(df_listings['Location'].dropna().astype(str).unique())
+    if 'Name' in df_providers.columns:
+        providers = sorted(df_providers['Name'].dropna().astype(str).unique())
+    if 'Food_Type' in df_listings.columns:
+        food_types = sorted(df_listings['Food_Type'].dropna().astype(str).unique())
+    if 'Meal_Type' in df_listings.columns:
+        meal_types = sorted(df_listings['Meal_Type'].dropna().astype(str).unique())
 
-            chart = (
-                alt.Chart(city_counts)
-                .mark_bar()
-                .encode(
-                    x=alt.X('City:N', sort='-y', title='City'),
-                    y=alt.Y('Listings:Q', title='Listings'),
-                    tooltip=[alt.Tooltip('City:N'), alt.Tooltip('Listings:Q')]
-                )
-                .properties(height=300)
+    # ---------------- Sidebar filters (no defaults) ----------------
+    st.sidebar.header("Filters")
+    st.sidebar.write("Leave filters empty to show all results.")
+    city = st.sidebar.multiselect("City", options=cities)                # no default selection
+    provider_sel = st.sidebar.multiselect("Provider", options=providers) # no default selection
+    food_type_sel = st.sidebar.multiselect("Food Type", options=food_types)
+    meal_sel = st.sidebar.multiselect("Meal Type", options=meal_types)
+    min_qty = st.sidebar.number_input("Minimum Quantity", value=0, step=1, min_value=0)
+
+    # ---------------- Apply filters locally ----------------
+    df_filtered = df_listings.copy()
+    if city:
+        df_filtered = df_filtered[df_filtered['Location'].astype(str).isin(city)]
+    if provider_sel:
+        if 'Provider_ID' in df_listings.columns and 'Provider_ID' in df_providers.columns:
+            pids = df_providers[df_providers['Name'].astype(str).isin(provider_sel)]['Provider_ID'].tolist()
+            df_filtered = df_filtered[df_filtered['Provider_ID'].isin(pids)]
+        else:
+            if 'Provider_Name' in df_filtered.columns:
+                df_filtered = df_filtered[df_filtered['Provider_Name'].astype(str).isin(provider_sel)]
+    if food_type_sel:
+        df_filtered = df_filtered[df_filtered['Food_Type'].astype(str).isin(food_type_sel)]
+    if meal_sel:
+        df_filtered = df_filtered[df_filtered['Meal_Type'].astype(str).isin(meal_sel)]
+    if 'Quantity' in df_filtered.columns:
+        try:
+            df_filtered = df_filtered[df_filtered['Quantity'].fillna(0).astype(float) >= float(min_qty)]
+        except Exception:
+            pass
+
+    # ---------------- Right-side quick stats + safe Altair chart ----------------
+    left, right = st.columns([2,1])
+    with left:
+        st.write(f"### {len(df_filtered)} matching listings")
+        st.dataframe(df_filtered)
+
+    with right:
+        st.write("### Quick stats")
+        total_qty = df_listings['Quantity'].dropna().astype(float).sum() if 'Quantity' in df_listings.columns else 0
+        st.metric("Total Quantity (all listings)", int(total_qty))
+        st.metric("Total Providers", len(df_providers))
+        st.metric("Total Receivers", len(df_receivers))
+
+        # build a safe city chart (convert types, limit top N)
+        if 'Location' in df_listings.columns:
+            city_counts = (
+                df_listings['Location']
+                .astype(str)
+                .value_counts()
+                .reset_index()
+                .rename(columns={'index': 'City', 'Location': 'Listings'})
             )
-            st.altair_chart(chart, use_container_width=True)
+            if not city_counts.empty:
+                city_counts['City'] = city_counts['City'].astype(str)
+                city_counts['Listings'] = city_counts['Listings'].fillna(0).astype(int)
+                TOP_N = 40
+                city_counts = city_counts.nlargest(TOP_N, 'Listings')
 
+                chart = (
+                    alt.Chart(city_counts)
+                    .mark_bar()
+                    .encode(
+                        x=alt.X('City:N', sort='-y', title='City'),
+                        y=alt.Y('Listings:Q', title='Listings'),
+                        tooltip=[alt.Tooltip('City:N'), alt.Tooltip('Listings:Q')]
+                    )
+                    .properties(height=300)
+                )
+                st.altair_chart(chart, use_container_width=True)
 
-# Show Tables
+# ---------------- Show Tables ----------------
 elif action == "Show Tables":
     st.header("Database tables")
+    # display up to 200 rows per table
     for t in ["providers","receivers","food_listings","claims"]:
         st.write(f"### {t}")
         try:
@@ -231,8 +228,8 @@ elif action == "Show Tables":
         except Exception as e:
             st.error(f"Error reading table {t}: {e}")
 
-# Add Food Listing
-elif action == "Add Food Listing":
+# ---------------- Add Food Listing ----------------
+elif action == "Add Listing":
     st.header("Add a new Food Listing")
     with st.form("add_listing"):
         provider_id = st.text_input("Provider ID (existing provider) - integer")
@@ -253,10 +250,15 @@ elif action == "Add Food Listing":
         except Exception as e:
             st.error(f"Failed to add listing: {e}")
 
-# Make Claim
+# ---------------- Make Claim ----------------
 elif action == "Make Claim":
     st.header("Claim available food")
-    df_listings = run_query("SELECT * FROM food_listings")
+    try:
+        df_listings = run_query("SELECT * FROM food_listings")
+    except Exception as e:
+        st.error("Failed to read listings: " + str(e))
+        st.stop()
+
     if df_listings.empty:
         st.info("No listings available.")
     else:
@@ -271,7 +273,7 @@ elif action == "Make Claim":
             except Exception as e:
                 st.error(f"Error submitting claim: {e}")
 
-# Update Claim Status
+# ---------------- Update Claim Status ----------------
 elif action == "Update Claim Status":
     st.header("Update a claim status (Pending -> Completed/Cancelled)")
     df_claims = run_query("SELECT * FROM claims")
@@ -287,9 +289,9 @@ elif action == "Update Claim Status":
             except Exception as e:
                 st.error(f"Failed to update: {e}")
 
-# Run SQL Queries (15+)
+# ---------------- Run SQL Queries (15+) ----------------
 elif action == "Run SQL Queries (15+)":
-    st.header("Predefined SQL queries and insights")
+    st.header("Predefined SQL queries and insights (from PRD)")
     queries = {
         "1. Providers & receivers per city": """
             SELECT p.City AS City,
@@ -335,20 +337,29 @@ elif action == "Run SQL Queries (15+)":
     query_choice = st.selectbox("Choose query", list(queries.keys()))
     chosen_q = queries[query_choice]
     if "choose city" in chosen_q.lower():
-        city_input = st.text_input("Enter city for provider contact list")
+        city_input = st.text_input("Enter city for provider contact list (case sensitive or exact match)")
         if st.button("Run query"):
-            df = run_query(queries["3. Provider contacts in city (example: choose city)"], params=(city_input,))
-            st.write(df)
+            try:
+                df = run_query(queries["3. Provider contacts in city (example: choose city)"], params=(city_input,))
+                st.write(df)
+            except Exception as e:
+                st.error(e)
     else:
         if st.button("Run selected query"):
-            df = run_query(chosen_q)
-            st.write(df)
-            if not df.empty:
-                numeric_cols = df.select_dtypes(include=['int','float']).columns.tolist()
-                if numeric_cols:
-                    col = numeric_cols[0]
-                    chart = alt.Chart(df).mark_bar().encode(x=df.columns[0]+":N", y=col+':Q', tooltip=list(df.columns)).properties(height=300)
-                    st.altair_chart(chart, use_container_width=True)
+            try:
+                df = run_query(chosen_q)
+                st.write(df)
+                if df.shape[0] == 0:
+                    st.info("No rows returned")
+                else:
+                    numeric_cols = df.select_dtypes(include=['int','float']).columns.tolist()
+                    if numeric_cols:
+                        col = numeric_cols[0]
+                        chart = alt.Chart(df).mark_bar().encode(x=df.columns[0]+":N", y=col+':Q', tooltip=list(df.columns)).properties(height=300)
+                        st.altair_chart(chart, use_container_width=True)
+            except Exception as e:
+                st.error(f"Query failed: {e}")
 
 st.write("---")
 st.caption("App: providers, receivers, food listings, claims; filters, CRUD, SQL analysis.")
+
