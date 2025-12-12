@@ -128,61 +128,97 @@ if action == "Dashboard / Filters":
     # normalize column names
     df_listings.columns = [c.strip() for c in df_listings.columns]
 
-    # prepare options for filters
-    cities = sorted(df_listings['Location'].dropna().unique()) if 'Location' in df_listings.columns else []
-    providers = sorted(df_providers['Name'].dropna().unique()) if 'Name' in df_providers.columns else []
-    food_types = sorted(df_listings['Food_Type'].dropna().unique()) if 'Food_Type' in df_listings.columns else []
-    meal_types = sorted(df_listings['Meal_Type'].dropna().unique()) if 'Meal_Type' in df_listings.columns else []
+  # ---------------- prepare options for filters (safe types) ----------------
+# ensure columns exist and convert to plain python types to avoid Altair errors
+cities = []
+providers = []
+food_types = []
+meal_types = []
 
-    # Sidebar filters (clean UI)
-    st.sidebar.header("Filters")
-    st.sidebar.write("Leave filters empty to show all results.")
-    city = st.sidebar.multiselect("City", options=cities)               # no default
-    provider_sel = st.sidebar.multiselect("Provider", options=providers) # no default
-    food_type_sel = st.sidebar.multiselect("Food Type", options=food_types)
-    meal_sel = st.sidebar.multiselect("Meal Type", options=meal_types)
-    min_qty = st.sidebar.number_input("Minimum Quantity", value=0, step=1, min_value=0)
+if 'Location' in df_listings.columns:
+    # convert to str and drop nulls
+    cities = sorted(df_listings['Location'].dropna().astype(str).unique())
 
-    # Filter data locally for robustness
-    df_filtered = df_listings.copy()
-    if city:
-        df_filtered = df_filtered[df_filtered['Location'].isin(city)]
-    if provider_sel:
-        # try map provider names -> Provider_ID if available
-        if 'Provider_ID' in df_listings.columns and 'Provider_ID' in df_providers.columns:
-            pids = df_providers[df_providers['Name'].isin(provider_sel)]['Provider_ID'].tolist()
-            df_filtered = df_filtered[df_filtered['Provider_ID'].isin(pids)]
-        else:
-            # fallback: filter by Provider_Name if present
-            if 'Provider_Name' in df_filtered.columns:
-                df_filtered = df_filtered[df_filtered['Provider_Name'].isin(provider_sel)]
-    if food_type_sel:
-        df_filtered = df_filtered[df_filtered['Food_Type'].isin(food_type_sel)]
-    if meal_sel:
-        df_filtered = df_filtered[df_filtered['Meal_Type'].isin(meal_sel)]
-    if 'Quantity' in df_filtered.columns:
-        try:
-            df_filtered = df_filtered[df_filtered['Quantity'].fillna(0).astype(float) >= float(min_qty)]
-        except Exception:
-            pass
+if 'Name' in df_providers.columns:
+    providers = sorted(df_providers['Name'].dropna().astype(str).unique())
 
-    # Layout: main table left, quick stats right
-    left, right = st.columns([2,1])
-    with left:
-        st.write(f"### {len(df_filtered)} matching listings")
-        st.dataframe(df_filtered)
-    with right:
-        st.write("### Quick stats")
-        total_qty = df_listings['Quantity'].dropna().astype(float).sum() if 'Quantity' in df_listings.columns else 0
-        st.metric("Total Quantity (all listings)", int(total_qty))
-        st.metric("Total Providers", len(df_providers))
-        st.metric("Total Receivers", len(df_receivers))
-        if 'Location' in df_listings.columns:
-            city_counts = df_listings['Location'].value_counts().reset_index().rename(columns={'index':'City','Location':'Listings'})
-            if not city_counts.empty:
-                chart = alt.Chart(city_counts).mark_bar().encode(x='City:N', y='Listings:Q', tooltip=['City','Listings'])
-                st.altair_chart(chart, use_container_width=True)
-# ---- end replacement ----
+if 'Food_Type' in df_listings.columns:
+    food_types = sorted(df_listings['Food_Type'].dropna().astype(str).unique())
+
+if 'Meal_Type' in df_listings.columns:
+    meal_types = sorted(df_listings['Meal_Type'].dropna().astype(str).unique())
+
+# ---------------- Sidebar filters (no defaults) ----------------
+st.sidebar.header("Filters")
+st.sidebar.write("Leave filters empty to show all results.")
+city = st.sidebar.multiselect("City", options=cities)                # no default selection
+provider_sel = st.sidebar.multiselect("Provider", options=providers) # no default selection
+food_type_sel = st.sidebar.multiselect("Food Type", options=food_types)
+meal_sel = st.sidebar.multiselect("Meal Type", options=meal_types)
+min_qty = st.sidebar.number_input("Minimum Quantity", value=0, step=1, min_value=0)
+
+# ---------------- Apply filters locally ----------------
+df_filtered = df_listings.copy()
+if city:
+    df_filtered = df_filtered[df_filtered['Location'].astype(str).isin(city)]
+if provider_sel:
+    if 'Provider_ID' in df_listings.columns and 'Provider_ID' in df_providers.columns:
+        pids = df_providers[df_providers['Name'].astype(str).isin(provider_sel)]['Provider_ID'].tolist()
+        df_filtered = df_filtered[df_filtered['Provider_ID'].isin(pids)]
+    else:
+        if 'Provider_Name' in df_filtered.columns:
+            df_filtered = df_filtered[df_filtered['Provider_Name'].astype(str).isin(provider_sel)]
+if food_type_sel:
+    df_filtered = df_filtered[df_filtered['Food_Type'].astype(str).isin(food_type_sel)]
+if meal_sel:
+    df_filtered = df_filtered[df_filtered['Meal_Type'].astype(str).isin(meal_sel)]
+if 'Quantity' in df_filtered.columns:
+    try:
+        df_filtered = df_filtered[df_filtered['Quantity'].fillna(0).astype(float) >= float(min_qty)]
+    except Exception:
+        pass
+
+# ---------------- Right-side quick stats + safe Altair chart ----------------
+left, right = st.columns([2,1])
+with left:
+    st.write(f"### {len(df_filtered)} matching listings")
+    st.dataframe(df_filtered)
+
+with right:
+    st.write("### Quick stats")
+    total_qty = df_listings['Quantity'].dropna().astype(float).sum() if 'Quantity' in df_listings.columns else 0
+    st.metric("Total Quantity (all listings)", int(total_qty))
+    st.metric("Total Providers", len(df_providers))
+    st.metric("Total Receivers", len(df_receivers))
+
+    # build a safe city chart (convert types, limit top N)
+    if 'Location' in df_listings.columns:
+        city_counts = (
+            df_listings['Location']
+            .astype(str)
+            .value_counts()
+            .reset_index()
+            .rename(columns={'index': 'City', 'Location': 'Listings'})
+        )
+        if not city_counts.empty:
+            city_counts['City'] = city_counts['City'].astype(str)
+            city_counts['Listings'] = city_counts['Listings'].fillna(0).astype(int)
+            # limit to top N to avoid extremely large charts
+            TOP_N = 40
+            city_counts = city_counts.nlargest(TOP_N, 'Listings')
+
+            chart = (
+                alt.Chart(city_counts)
+                .mark_bar()
+                .encode(
+                    x=alt.X('City:N', sort='-y', title='City'),
+                    y=alt.Y('Listings:Q', title='Listings'),
+                    tooltip=[alt.Tooltip('City:N'), alt.Tooltip('Listings:Q')]
+                )
+                .properties(height=300)
+            )
+            st.altair_chart(chart, use_container_width=True)
+
 
 # Show Tables
 elif action == "Show Tables":
